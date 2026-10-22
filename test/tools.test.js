@@ -361,6 +361,54 @@ test('无参数调用仍然拿到 {}，不会被当成解析失败', () => {
   assert.deepEqual(out.calls[0].arguments, {});
 });
 
+// 真实事故（2026-10-22 16:33，raw/chatcmpl-aa601b….txt）：
+// 开标签是约定的 <tool_call>，收尾却被写成上游 DSL 形式，正文只剩半段代码。
+test('开标签是 <tool_call>、收尾是 DSML 形式时，仍要解析出完整参数', () => {
+  const body = [
+    '<tool_call>{"name":"create_file","arguments":{"path":"a.js","content":"第1行\\n第2行\\n第3行"}}',
+    '</｜｜DSML｜｜ invoke>',
+    '</｜｜DSML｜｜ calls>',
+  ].join('\n');
+  const out = parseToolCalls(body, TOOLS);
+  assert.equal(out.calls.length, 1);
+  assert.equal(out.calls[0].name, 'create_file');
+  assert.equal(out.calls[0].arguments.path, 'a.js');
+  assert.equal(out.calls[0].arguments.content, '第1行\n第2行\n第3行');
+  assert.equal(out.content.trim(), '', '协议残渣不能留在正文里：' + out.content);
+});
+
+test('完全没有闭合标签、后面直接结束，也要解析出来', () => {
+  const body = '<tool_call>{"name":"create_file","arguments":{"path":"b.js","content":"x = 1"}}';
+  const out = parseToolCalls(body, TOOLS);
+  assert.equal(out.calls.length, 1);
+  assert.equal(out.calls[0].arguments.path, 'b.js');
+  assert.equal(out.content.trim(), '');
+});
+
+// 真实事故（2026-10-22 16:34）：write 的内容是 JS，里面有模板字符串 `...`，
+// 行内代码切分把 <tool_call> 块切碎，pattern 匹配不到，剩下被当残渣删掉 → tools=0、正文只剩半段。
+test('参数里的模板反引号不能把协议块切碎', () => {
+  const body = '<tool_call>{"name":"create_file","arguments":{"path":"a.js","content":"const s = `HTTP ${r.status}`;\\nreturn s;"}}</tool_call>';
+  const out = parseToolCalls(body, TOOLS);
+  assert.equal(out.calls.length, 1);
+  assert.equal(out.calls[0].arguments.path, 'a.js');
+  assert.equal(out.calls[0].arguments.content, 'const s = `HTTP ${r.status}`;\nreturn s;');
+});
+
+test('参数里带整段代码围栏也不能把协议块切碎', () => {
+  const body = '<tool_call>{"name":"create_file","arguments":{"path":"doc.md","content":"示例：\\n```js\\nconst a = 1;\\n```\\n结束"}}</tool_call>';
+  const out = parseToolCalls(body, TOOLS);
+  assert.equal(out.calls.length, 1);
+  assert.ok(out.calls[0].arguments.content.includes('const a = 1;'), JSON.stringify(out.calls[0].arguments));
+});
+
+test('围栏里的示例仍然不执行（保护没被上面的改动破坏）', () => {
+  const body = ['看这个例子：', FENCE + 'json', '<tool_call>{"name":"create_file","arguments":{"path":"x"}}</tool_call>', FENCE].join('\n');
+  const out = parseToolCalls(body, TOOLS);
+  assert.equal(out.calls.length, 0, '围栏里的示例被当成真调用了');
+  assert.ok(out.content.includes('<tool_call>'), '围栏内容应原样保留');
+});
+
 
 
 
