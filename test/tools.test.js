@@ -212,3 +212,49 @@ test('只有 terminal_observe 的工具列表不产生 open/next/close 指引', 
   assert.ok(!prompt.includes('## 长任务不要干等'));
 });
 
+const PROXY_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'package_proxy',
+      parameters: {
+        type: 'object',
+        properties: { tool_name: { type: 'string' }, params: { type: 'object' } },
+      },
+    },
+  },
+];
+
+const proxyCall = (paramsLiteral) => '<tool_call>{"name":"package_proxy","arguments":{"tool_name":"super_admin:bash","params":' + paramsLiteral + '}}</tool_call>';
+
+// 外层 JSON 一定合法，坏的是 params 字符串里面的内容（真实故障就是这样）
+const proxyCallWithParamsText = (paramsText) => '<tool_call>' + JSON.stringify({
+  name: 'package_proxy',
+  arguments: { tool_name: 'super_admin:bash', params: paramsText },
+}) + '</tool_call>';
+
+test('能解开的 params 字符串被解成对象', () => {
+  const r = parseToolCalls(proxyCall(JSON.stringify(JSON.stringify({ command: 'ls' }))), PROXY_TOOLS);
+  assert.equal(r.calls.length, 1);
+  assert.deepEqual(r.calls[0].arguments.params, { command: 'ls' });
+});
+
+test('解不开的 params 字符串不再静默变成 {}（否则客户端只会说“参数没到”）', () => {
+  // 真实故障：转义坏掉的字符串被替换成 {}，客户端报 "Missing required parameters: command
+  // (no parameters arrived)"，真正的转义错误被吞掉。
+  const broken = '{"command":"echo "hi" and \'single\'';   // 内层 JSON 故意不合法
+  const r = parseToolCalls(proxyCallWithParamsText(broken), PROXY_TOOLS);
+  assert.equal(r.calls.length, 1, '坏 params 不能连调用一起丢掉');
+  const params = r.calls[0].arguments.params;
+  assert.notDeepEqual(params, {}, '不能把坏掉的 params 变成空对象');
+  assert.equal(typeof params, 'string', '原文应透传给客户端，让客户端报出真正的解析错误');
+  assert.ok(params.includes('command'), '原文里必须还能看到 command');
+});
+
+test('扁平参数（没有 params 包一层）仍然落进 params', () => {
+  const flat = '<tool_call>{"name":"package_proxy","arguments":{"tool_name":"super_admin:bash","command":"ls","timeoutMs":"3000"}}</tool_call>';
+  const r = parseToolCalls(flat, PROXY_TOOLS);
+  assert.deepEqual(r.calls[0].arguments.params, { command: 'ls', timeoutMs: '3000' });
+});
+
+
