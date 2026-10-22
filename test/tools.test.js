@@ -105,3 +105,26 @@ test('多个调用按顺序解析', () => {
   assert.equal(r.calls.length, 2);
   assert.deepEqual(r.calls.map(c => c.arguments.command), ['a', 'b']);
 });
+
+test('正文里复述的工具结果 JSON 整段删除（含被截断的）', () => {
+  const out = [
+    'super_admin:bash 工具调用参数不合法: command 为空',
+    '',
+    '{"command":"cd /tmp && ls","timeoutMs":30000}',
+    '',
+    '{"command":"cd /tmp && ls","context_preserved":true,"exitCode":0,"output":"a\\nb\\n',
+    '',
+    '真正的结论在这里。',
+  ].join('\r\n');
+  const r = parseToolCalls(out, TOOLS);
+  assert.ok(!/context_preserved|exitCode|"command"/.test(r.content), `仍有复述残留: ${r.content}`);
+  assert.ok(!/工具调用参数不合法/.test(r.content), '报错行没被清掉');
+  assert.ok(r.content.includes('真正的结论'), `正文被误删: ${r.content}`);
+});
+
+test('围栏里的 JSON 示例不受影响', () => {
+  const out = '看看这个配置：\n\n```json\n{"command":"ls","output":"x"}\n```\n\n就这样。';
+  const r = parseToolCalls(out, TOOLS);
+  assert.ok(r.content.includes('"command"'), '围栏内的示例被误删');
+  assert.ok(r.content.includes('就这样'));
+});
