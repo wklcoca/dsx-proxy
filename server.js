@@ -37,6 +37,8 @@ const DEFAULTS = {
   // 绝大多数 OpenAI 兼容客户端会把 content 当 markdown 直接渲染，不洗就会看到协议泄露；
   // 但如果客户端自己会解析这些方言，可以设成 false，避免把它需要的标记删掉。
   stripProtocolResidue: true,
+  // 洗掉的内容 >= 200 字符时，在正文末尾附一条可见提醒（模型犯了错，用户该知道）
+  echoWarning: true,
   sessionTtlMs: 1800000,
   minRequestGapMs: 1500,
   maxContextTokens: 1000000,
@@ -394,12 +396,26 @@ async function handleChat(req, res, body) {
     let reasoning = final.thinking || thinkSeen;
     let toolCalls = [];
     const recoverStats = {};
+    let emptyArgs = 0;
     if (r.tools.length && r.toolChoice !== 'none') {
       const rawContent = content;
       const parsed = parseToolCalls(content, r.tools, { stats: recoverStats });
       if (config.stripProtocolResidue !== false) content = parsed.content;
       else content = rawContent;
       toolCalls = parsed.calls.map(c => ({ id: makeCallId(), name: c.name, arguments: c.arguments }));
+      // 参数为空的调用一定会被客户端拒绝（"command 为空"），这里单独计数便于定位
+      emptyArgs = toolCalls.filter(c => !c.arguments || !Object.keys(c.arguments).length).length;
+    }
+    // 只有「复述类垃圾」被删掉时才算模型犯错。
+    // 千万不能拿「原文长度 - 清洗后长度」：合法的工具调用也会从正文里消失，
+    // 那样每次工具调用都会超过阈值、每轮都弹提示（已踩过这个坑）。
+    const strippedChars = recoverStats.echoChars || 0;
+    if (config.echoWarning !== false && strippedChars >= 200) {
+      const note = content.trim()
+        ? `> ⚠️ dsx-proxy：本回合模型把工具调用/结果原文复述进了回复（已自动移除 ${strippedChars} 字符）。上面的内容可能不完整，必要时请让它继续。`
+        : `> ⚠️ dsx-proxy：本回合模型只复述了工具调用/结果的原文（已移除 ${strippedChars} 字符），没有留下有效正文。请重新发送，或让它继续。`;
+      content = [content.trim(), note].filter(Boolean).join('\n\n');
+      try { logLine({ event: 'echo_warning', stripped: strippedChars, kept: content.length - note.length }); } catch (_) {}
     }
     const finishReason = toolCalls.length ? 'tool_calls' : 'stop';
     // 模型用了非标准格式（方言 / 缩写的工具名 / 残缺标签）→ 下一轮明确告诉它，
@@ -439,6 +455,7 @@ async function handleChat(req, res, body) {
         ? { match: `${match.len}@${match.off}`, prepend: prependChars, turns: (mode === 'reuse' && entry ? (entry.turns || 0) : 0) + 1 }
         : { n: hashes.length, trunc: r.truncated ? 1 : 0 }),
       ...(recoverKinds.length ? { recover: recoverKinds.join('+') } : {}),
+      ...(emptyArgs ? { emptyArgs } : {}),
     };
     // 诊断：上游明明产出了内容，最终正文和工具调用却都是空 —— 说明解析/清洗层把它吃掉了。
     // 不打原始文本就只能看到 content=0，无从下手（真实事故：59 个输出 token 消失）。

@@ -13,6 +13,7 @@
   "reusePrependMaxChars": 60000,
   "sessionReuse": true,
   "stripProtocolResidue": true,
+  "echoWarning": true,
   "sessionTtlMs": 21600000,
   "minRequestGapMs": 3000,
   "maxContextTokens": 500000,

@@ -84,6 +84,7 @@ print(client.chat.completions.create(
 | `defaultModel` | `deepseek-chat` | 客户端没传 model 时用 |
 | `sessionReuse` | `true` | 是否复用上游会话（强烈建议开） |
 | `stripProtocolResidue` | `true` | 把协议标记从正文里洗掉。**客户端自己会解析这些标记时设 `false`**，否则它会看不到原始标记 |
+| `echoWarning` | `true` | 洗掉 ≥200 字符时在正文末尾附一条可见提醒（模型犯了错，用户该知道）。客户端自己有"空回复重试"时可以设 `false`，让空正文去触发它的重试 |
 | `reuseMatchMode` | `anywhere` | `anywhere`：锚点在上下文中任意位置匹配；`head`：退回"已存尾部==本次头部"的老行为 |
 | `reusePrependMaxChars` | `60000` | 头部被改写时，最多回贴多少字符的"被改写的头" |
 | `maxContextChars` | `900000` | 单次**全量重推**的正文上限，超了按最新消息截断 |
@@ -144,6 +145,24 @@ print(client.chat.completions.create(
 
 只发一次（下一轮没再犯错就清掉），避免变成每轮都念的噪音。日志里能看到
 `event=format_nudge kinds=salvaged+renamed times=1` 和每轮的 `recover=salvaged+dialect`。
+
+### 清洗之后一定要告诉用户
+
+模型还有一种更糟的失败方式：把**工具报错、调用参数、工具结果原文**整段抄进回复正文，
+而且往往因为输出预算被这些垃圾吃掉，真正的答案在中途被截断。这些内容没有标签，
+任何基于标签的规则都抓不到，所以 `sanitizeAssistantText` 会按"段落"判定：
+整段只有一个 `{"command":…,"context_preserved":…,"output":…}` 之类的对象就整段丢掉
+（截断不闭合的也丢，因为那一整段仍然只由它组成）。
+
+**但清理不等于替模型遮掩。** 洗掉的字符 ≥ 200 时，正文末尾会附一条可见提醒：
+
+```
+> ⚠️ dsx-proxy：本回合模型把工具调用/结果原文复述进了回复（已自动移除 2286 字符）。
+> 上面的内容可能不完整，必要时请让它继续。
+```
+
+如果整条回复都是垃圾，提醒会变成唯一内容并提示重新发送 —— 用户看到的应该是
+"AI 犯了个错"，而不是一段被悄悄修好的、看起来正常的答案。
 
 ### 正文清理是通用的，不是给某个客户端定制的
 

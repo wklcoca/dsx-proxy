@@ -128,3 +128,13 @@ test('围栏里的 JSON 示例不受影响', () => {
   assert.ok(r.content.includes('"command"'), '围栏内的示例被误删');
   assert.ok(r.content.includes('就这样'));
 });
+
+test('正常工具调用不算“复述垃圾”（echoChars 必须为 0）', () => {
+  // 回归：曾用「原文长度 - 清洗后长度」当阈值，导致每次工具调用都误报
+  const out = '我先看看目录。\n<tool_call>{"name":"super_admin:bash","arguments":{"command":"ls -la /sdcard/Download && sed -n 1,200p Sim/TextMapLoader.py"}}</tool_call>\n然后分析。';
+  const stats = {};
+  const r = parseToolCalls(out, TOOLS, { stats });
+  assert.equal(r.calls.length, 1);
+  assert.equal(stats.echoChars || 0, 0, `正常调用被误判成复述：echoChars=${stats.echoChars}`);
+  assert.ok(r.content.includes('我先看看目录'));
+});
