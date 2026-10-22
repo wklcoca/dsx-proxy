@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { parseToolCalls, buildToolPrompt } = require('../lib/tools');
+const { parseToolCalls, buildToolPrompt, normalizeFenceLines } = require('../lib/tools');
 
 const TOOLS = [
   {
@@ -256,5 +256,30 @@ test('扁平参数（没有 params 包一层）仍然落进 params', () => {
   const r = parseToolCalls(flat, PROXY_TOOLS);
   assert.deepEqual(r.calls[0].arguments.params, { command: 'ls', timeoutMs: '3000' });
 });
+
+const FENCE = '\u0060\u0060\u0060';
+
+test('粘在文字上的围栏被拆到独立行（否则后面整段被吞进代码块）', () => {
+  // 真实故障：模型写成 `…是崩``` ` 和 ```**加粗**，严格的 Markdown 解析器不认行中围栏，
+  // 于是关闭围栏失效、后面所有小节都渲染成代码。
+  const source = '结果：是崩' + FENCE + '\nAssertionError: x\n' + FENCE + '**后面的正文**\n';
+  const out = normalizeFenceLines(source);
+  assert.ok(out.includes('结果：是崩\n' + FENCE + '\n'), out);
+  assert.ok(out.includes('\n' + FENCE + '\n**后面的正文**'), out);
+  assert.ok(!/[^\n]`{3}/.test(out.split('\n').filter(line => !line.startsWith(FENCE)).join('\n')), '围栏仍粘在文字里');
+});
+
+test('没闭合的围栏在结尾补上，避免吞掉后文', () => {
+  const out = normalizeFenceLines('开头\n' + FENCE + 'bash\nls\n');
+  assert.equal((out.match(/`{3}/g) || []).length, 2, out);
+  assert.ok(out.trimEnd().endsWith(FENCE), out);
+});
+
+test('本来就合法的围栏一个字节都不动', () => {
+  const source = '正常\n' + FENCE + '\ncode\n' + FENCE + '\n结束';
+  assert.equal(normalizeFenceLines(source), source);
+  assert.equal(normalizeFenceLines('没有围栏'), '没有围栏');
+});
+
 
 
