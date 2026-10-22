@@ -129,6 +129,17 @@ test('围栏里的 JSON 示例不受影响', () => {
   assert.ok(r.content.includes('就这样'));
 });
 
+test('模型自造的闭合标签变体（</call_call>）不留在正文', () => {
+  // 真实案例：模型吐 </call_call>，旧规则只认 </call>，正文里就多出这个残片
+  const out = '探针只有 high/high_bounded/ultra_low。\n</call_call>\n';
+  const r = parseToolCalls(out, TOOLS);
+  assert.ok(!/<\/?call[-_]/i.test(r.content), `残留协议标记: ${r.content}`);
+  assert.ok(r.content.includes('探针只有'));
+
+  const kept = parseToolCalls('我要 call 一下这个函数，别删我的字。', TOOLS);
+  assert.ok(kept.content.includes('别删我的字'), '正常正文被误删');
+});
+
 test('正常工具调用不算“复述垃圾”（echoChars 必须为 0）', () => {
   // 回归：曾用「原文长度 - 清洗后长度」当阈值，导致每次工具调用都误报
   const out = '我先看看目录。\n<tool_call>{"name":"super_admin:bash","arguments":{"command":"ls -la /sdcard/Download && sed -n 1,200p Sim/TextMapLoader.py"}}</tool_call>\n然后分析。';

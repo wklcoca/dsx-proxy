@@ -420,7 +420,7 @@ async function handleChat(req, res, body) {
     const finishReason = toolCalls.length ? 'tool_calls' : 'stop';
     // 模型用了非标准格式（方言 / 缩写的工具名 / 残缺标签）→ 下一轮明确告诉它，
     // 否则它会一直沿用错误格式（我们照单全收，在它眼里就是"格式没错"）。
-    const recoverKinds = ['salvaged', 'dialect', 'renamed'].filter(k => recoverStats[k]);
+    const recoverKinds = ['salvaged', 'dialect', 'renamed', 'residue'].filter(k => recoverStats[k]);
 
     // 更新会话状态
     if (matchedKey && matchedKey !== r.sessionKey && state.sessions[matchedKey]) {
@@ -547,11 +547,17 @@ function renderFormatNudge(nudge) {
   if (kinds.includes('salvaged')) why.push('标签没有闭合或缺少 `>`（残缺的工具调用）');
   if (kinds.includes('dialect')) why.push('用了 DSML / <invoke> / <parameter> 等非约定写法');
   if (kinds.includes('renamed')) why.push('工具名与声明不完全一致（缩写、大小写或命名空间不对）');
+  if (kinds.includes('residue')) why.push('正文里写入了 `</call_call>`、`<call_end>` 这类非协议标签碎片（已删除）');
+  const residueOnly = kinds.length === 1 && kinds.includes('residue');
   return [
     '# 工具调用格式纠正',
     '',
-    `你上一轮的工具调用格式不规范：${why.join('；') || '未按约定协议输出'}。`,
-    '本轮已按你的意图代你修正，但请**从现在起严格使用唯一的标准格式**：',
+    residueOnly
+      ? '你上一轮的正文里出现了不属于任何协议的标签碎片（例如 `</call_call>`、`<call_end>`），已替你删除。'
+      : `你上一轮的工具调用格式不规范：${why.join('；') || '未按约定协议输出'}。`,
+    residueOnly
+      ? '正文只能是给用户看的自然语言，**任何 `<...>` 形式的协议标签都不要输出**。'
+      : '本轮已按你的意图代你修正，但请**从现在起严格使用唯一的标准格式**：',
     '',
     '```',
     '<tool_call>{"name":"工具名","arguments":{...}}</tool_call>',
@@ -559,8 +565,8 @@ function renderFormatNudge(nudge) {
     '',
     '要求：',
     '1. 工具名必须与工具声明逐字一致（不要缩写、不要改大小写、不要省略命名空间）。',
-    '2. 一个调用一个 `<tool_call>` 块，必须完整闭合；不要使用 DSML、`<invoke>`、`<parameter>` 等其他写法。',
-    '3. 不要把这些标记写进正文或代码块里。',
+    '2. 一个调用一个 `<tool_call>` 块，必须完整闭合；不要使用 DSML、`<invoke>`、`<parameter>`、`</call_call>` 等其他写法。',
+    '3. 不要把这些标记写进正文或代码块里；正文结束后直接开始下一句自然语言，不要用任何标签收尾。',
   ].join('\n');
 }
 
