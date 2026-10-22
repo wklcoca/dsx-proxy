@@ -1,0 +1,11 @@
+# 运行期数据：含 token / 会话状态 / 聊天日志，绝不提交
+config.json
+state.json
+*.log
+
+# wasm 缓存
+*.wasm
+sha3.wasm
+
+node_modules/
+.DS_Store

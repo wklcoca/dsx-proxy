@@ -1,0 +1,107 @@
+// 工具调用解析 / 正文清洗的回归测试
+//   node --test test/
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert');
+const { parseToolCalls } = require('../lib/tools');
+
+const TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'super_admin:bash',
+      description: 'run a shell command',
+      parameters: { type: 'object', properties: { command: { type: 'string' } } },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_file',
+      parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } },
+    },
+  },
+];
+
+// 正文里不允许出现的协议痕迹
+const LEAK = /<\|\s*DSML|<\/?(?:invoke|parameter|param|call|tool_)|<think/i;
+
+test('标准 tool_call 标签被解析，正文保留', () => {
+  const out = '先看一下目录。\n<tool_call>{"name":"bash","arguments":{"command":"pwd"}}</tool_call>\n然后再说。';
+  const r = parseToolCalls(out, TOOLS);
+  assert.equal(r.calls.length, 1);
+  assert.equal(r.calls[0].name, 'super_admin:bash');
+  assert.equal(r.calls[0].arguments.command, 'pwd');
+  assert.ok(r.content.includes('先看一下目录'));
+  assert.ok(r.content.includes('然后再说'));
+});
+
+test('DSML 方言被解析', () => {
+  const out = '<|DSML|| invoke name="super_admin:bash">\n<|DSML|| parameter name="command">ls -la</|DSML|| parameter>\n</|DSML|| invoke>';
+  const r = parseToolCalls(out, TOOLS);
+  assert.equal(r.calls.length, 1);
+  assert.equal(r.calls[0].arguments.command, 'ls -la');
+  assert.ok(!LEAK.test(r.content), `正文泄漏协议标记: ${r.content}`);
+});
+
+test('残缺的 DSML 调用被抢救，而不是删成空', () => {
+  const out = '开始。\n<|DSML|| invoke name="bash",arguments={"command":"echo hi"}}';
+  const r = parseToolCalls(out, TOOLS);
+  assert.equal(r.calls.length, 1, '残缺调用应该被抢救成真调用');
+  assert.equal(r.calls[0].name, 'super_admin:bash');
+  assert.equal(r.calls[0].arguments.command, 'echo hi');
+  assert.ok(!LEAK.test(r.content));
+  assert.ok(r.content.includes('开始'));
+});
+
+test('只写末段工具名也能解析（名称归一化）', () => {
+  const out = '{"name":"bash","arguments":{"command":"ls"}}';
+  const r = parseToolCalls(out, TOOLS);
+  assert.equal(r.calls.length, 1);
+  assert.equal(r.calls[0].name, 'super_admin:bash');
+});
+
+test('大小写与分隔符不一致也能解析', () => {
+  const out = '{"name":"Super_Admin.Bash","arguments":{"command":"ls"}}';
+  const r = parseToolCalls(out, TOOLS);
+  assert.equal(r.calls.length, 1);
+  assert.equal(r.calls[0].name, 'super_admin:bash');
+});
+
+test('认不出的工具名照原样透传，绝不让整轮变空', () => {
+  const out = '{"name":"grep_stuff","arguments":{"pattern":"x"}}';
+  const r = parseToolCalls(out, TOOLS);
+  assert.equal(r.calls.length, 1, '未知工具名也应该产出调用，交给客户端报错');
+  assert.equal(r.calls[0].name, 'grep_stuff');
+  assert.ok(!/"arguments"/.test(r.content), '调用 JSON 不能留在正文里');
+});
+
+test('围栏里的示例不执行，但仍可见', () => {
+  const out = '示例：\n```json\n{"name":"bash","arguments":{"command":"rm -rf /"}}\n```\n上面只是举例。';
+  const r = parseToolCalls(out, TOOLS);
+  assert.equal(r.calls.length, 0);
+  assert.ok(r.content.includes('rm -rf'));
+});
+
+test('纯正文不受影响', () => {
+  const out = '这是一段普通回复，里面提到 {"name": "x"} 但没有 arguments，不算调用。';
+  const r = parseToolCalls(out, TOOLS);
+  assert.equal(r.calls.length, 0);
+  assert.ok(r.content.includes('普通回复'));
+});
+
+test('思考块不留在正文', () => {
+  const out = '<think>内部推理</think>这是可见的答案。';
+  const r = parseToolCalls(out, TOOLS);
+  assert.ok(!LEAK.test(r.content), `正文泄漏思考标记: ${r.content}`);
+  assert.ok(r.content.includes('这是可见的答案'));
+});
+
+test('多个调用按顺序解析', () => {
+  const out = '<tool_call>{"name":"bash","arguments":{"command":"a"}}</tool_call>' +
+              '<tool_call>{"name":"bash","arguments":{"command":"b"}}</tool_call>';
+  const r = parseToolCalls(out, TOOLS);
+  assert.equal(r.calls.length, 2);
+  assert.deepEqual(r.calls.map(c => c.arguments.command), ['a', 'b']);
+});

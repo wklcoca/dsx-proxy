@@ -1,0 +1,27 @@
+{
+  "name": "dsx-proxy",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible proxy for the DeepSeek web app: chat, streaming, reasoning and tool calls",
+  "main": "server.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "deepseek",
+    "openai-compatible",
+    "proxy",
+    "llm",
+    "tool-calls"
+  ],
+  "files": [
+    "server.js",
+    "lib/",
+    "scripts/",
+    "config.example.json"
+  ]
+}
