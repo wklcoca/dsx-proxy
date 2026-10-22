@@ -281,5 +281,46 @@ test('本来就合法的围栏一个字节都不动', () => {
   assert.equal(normalizeFenceLines('没有围栏'), '没有围栏');
 });
 
+/** 逐行输出围栏状态，用来断言「某段正文不在代码块里」。 */
+function fenceStatePerLine(text) {
+  const states = [];
+  let inFence = false;
+  for (const line of String(text).split('\n')) {
+    const isFence = /^(`{3,})([^`]*)$/.test(line.trim());
+    if (isFence) { states.push({ line, inFence: true, fence: true }); inFence = !inFence; }
+    else states.push({ line, inFence, fence: false });
+  }
+  return states;
+}
+
+test('真实事故：合法代码块 + 粘连关闭围栏，不能把后面整段包进代码', () => {
+  // 手机上一模一样的形状：先一个独立围栏，关闭围栏粘了正文（正文里还有行内 `code`），
+  // 末尾还有一行多余围栏。
+  const body = [
+    '## 一、验证',
+    '',
+    FENCE,
+    'ROOTFS_NAME=[rootfs-debian]',
+    FENCE + '这两个变量都已进入`env -i`白名单，`UBUNTU_PATH`按设计仍然是空。',
+    '',
+    '## 二、后面还有正文',
+    '',
+    '这里必须是普通正文，不能被当成代码。',
+    '',
+    FENCE,
+    '',
+  ].join('\n');
+  const fixed = normalizeFenceLines(body);
+  const states = fenceStatePerLine(fixed);
+  const prose = states.filter(s => s.line.includes('必须是普通正文'));
+  assert.equal(prose.length, 1);
+  assert.equal(prose[0].inFence, false, '正文被包进代码块了：\n' + fixed);
+  const braces = states.filter(s => s.fence).length;
+  assert.equal(braces % 2, 0, '围栏没有配平：\n' + fixed);
+  assert.equal(braces, 2, '只应剩下原来那个代码块：\n' + fixed);
+  assert.ok(fixed.includes(FENCE + '\n这两个变量都已进入'), '关闭围栏没有独立成行：\n' + fixed);
+});
+
+
 
 
