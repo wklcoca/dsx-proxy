@@ -405,6 +405,14 @@ async function handleChat(req, res, body) {
       toolCalls = parsed.calls.map(c => ({ id: makeCallId(), name: c.name, arguments: c.arguments }));
       // 参数为空的调用一定会被客户端拒绝（"command 为空"），这里单独计数便于定位
       emptyArgs = toolCalls.filter(c => !c.arguments || !Object.keys(c.arguments).length).length;
+      // 参数为空说明解析把参数丢了 —— 没有原始输出就只能看到 emptyArgs=1，无从下手。
+      if (emptyArgs) {
+        try {
+          const dir = path.join(ROOT, 'raw');
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(path.join(dir, `${id}.txt`), String(rawContent || ''), 'utf8');
+        } catch (_) {}
+      }
     }
     // 只有「复述类垃圾」被删掉时才算模型犯错。
     // 千万不能拿「原文长度 - 清洗后长度」：合法的工具调用也会从正文里消失，

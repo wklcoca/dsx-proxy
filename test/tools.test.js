@@ -321,6 +321,46 @@ test('真实事故：合法代码块 + 粘连关闭围栏，不能把后面整�
   assert.ok(fixed.includes(FENCE + '\n这两个变量都已进入'), '关闭围栏没有独立成行：\n' + fixed);
 });
 
+// 真实事故（2026-10-22 16:26，deepseek-reasoner 经本机反代）：
+// write 的 content 是一整段多行源码，模型把换行裸着写进 JSON 字符串，
+// JSON.parse 失败 → 参数整段丢失 → 客户端报 "missing required property file_path / content"。
+// 代理日志表现为 recover=residue emptyArgs=1。
+test('参数里带裸换行的多行内容也能解析（write 大段源码的真实形状）', () => {
+  const body = [
+    '<tool_call>{"name":"create_file","arguments":{"path":"a.js","content":"const a = 1;',
+    'const b = 2;',
+    '\tconsole.log(a + b);',
+    '"}}</tool_call>',
+  ].join('\n');
+  const out = parseToolCalls(body, TOOLS);
+  assert.equal(out.calls.length, 1);
+  assert.equal(out.calls[0].name, 'create_file');
+  assert.equal(out.calls[0].arguments.path, 'a.js');
+  assert.equal(out.calls[0].arguments.content, 'const a = 1;\nconst b = 2;\n\tconsole.log(a + b);\n');
+});
+
+test('字符串外的换行和缩进不受影响（只转义字符串内部的控制字符）', () => {
+  const body = [
+    '<tool_call>',
+    '{',
+    '  "name": "create_file",',
+    '  "arguments": { "path": "a.txt", "content": "第一行',
+    '第二行" }',
+    '}',
+    '</tool_call>',
+  ].join('\n');
+  const out = parseToolCalls(body, TOOLS);
+  assert.equal(out.calls.length, 1);
+  assert.equal(out.calls[0].arguments.path, 'a.txt');
+  assert.equal(out.calls[0].arguments.content, '第一行\n第二行');
+});
+
+test('无参数调用仍然拿到 {}，不会被当成解析失败', () => {
+  const out = parseToolCalls('<tool_call>{"name":"create_file","arguments":{}}</tool_call>', TOOLS);
+  assert.equal(out.calls.length, 1);
+  assert.deepEqual(out.calls[0].arguments, {});
+});
+
 
 
 
