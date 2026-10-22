@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { parseToolCalls } = require('../lib/tools');
+const { parseToolCalls, buildToolPrompt } = require('../lib/tools');
 
 const TOOLS = [
   {
@@ -149,3 +149,66 @@ test('正常工具调用不算“复述垃圾”（echoChars 必须为 0）', ()
   assert.equal(stats.echoChars || 0, 0, `正常调用被误判成复述：echoChars=${stats.echoChars}`);
   assert.ok(r.content.includes('我先看看目录'));
 });
+
+const BACKGROUND_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'super_admin:bash',
+      description: 'run a shell command',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' }, background: { type: 'string' }, timeoutMs: { type: 'string' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'terminal_wait',
+      parameters: { type: 'object', properties: { sessionId: { type: 'string' }, timeoutMs: { type: 'string' } } },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_screen',
+      parameters: { type: 'object', properties: { sessionId: { type: 'string' } } },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'terminal_observe',
+      parameters: { type: 'object', properties: { observation: { type: 'object' } } },
+    },
+  },
+];
+
+test('长任务提示点名真实的后台工具，而不是模型调不到的 terminal_observe', () => {
+  // 回归：terminal_observe 在 Runtime 里要求 plugin owner，模型直接调用必报错；
+  // 真正可用的是 super_admin:bash 的 background + terminal_wait + get_screen。
+  const prompt = buildToolPrompt(BACKGROUND_TOOLS);
+  assert.ok(prompt.includes('## 长任务不要干等'), '缺少长任务段落');
+  // 工具定义 JSON 里当然会列出 terminal_observe，这里只看指引段落
+  const guide = prompt.slice(prompt.indexOf('## 长任务不要干等'));
+  assert.ok(guide.includes('`background: "true"`'), '没有教后台启动');
+  assert.ok(guide.includes('`super_admin:bash`'), '没有点名真实的执行工具');
+  assert.ok(guide.includes('`terminal_wait`'), '没有点名等待工具');
+  assert.ok(guide.includes('`get_screen`'), '没有点名屏幕工具');
+  assert.ok(!/terminal_observe/.test(guide), '指引仍在教模型调不到的工具');
+  assert.ok(!/"op":"open"/.test(guide), '仍在教 open/next/close 形状');
+});
+
+test('没有后台执行工具时不凭空造长任务段落', () => {
+  const prompt = buildToolPrompt(TOOLS);
+  assert.ok(!prompt.includes('## 长任务不要干等'), '无背景工具却冒出长任务指引');
+  assert.ok(prompt.includes('串行执行'), '串行说明丢了');
+});
+
+test('只有 terminal_observe 的工具列表不产生 open/next/close 指引', () => {
+  const prompt = buildToolPrompt([BACKGROUND_TOOLS[3]]);
+  assert.ok(!/"op":"open"/.test(prompt));
+  assert.ok(!prompt.includes('## 长任务不要干等'));
+});
+
