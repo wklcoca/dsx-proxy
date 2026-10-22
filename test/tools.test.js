@@ -409,6 +409,49 @@ test('围栏里的示例仍然不执行（保护没被上面的改动破坏）',
   assert.ok(out.content.includes('<tool_call>'), '围栏内容应原样保留');
 });
 
+// 真实事故（2026-10-22 16:50，raw/chatcmpl-513a51….txt）：
+// 模型一轮里混用三种写法，且 write 的 content 里带 ``` 代码块，
+// 结果 3 个调用全丢、正文只剩 JSON 文本。日志 recover=residue tools=0。
+test('write 的 content 里带代码块、又没有 </tool_call> 时，块不能被切碎', () => {
+  const body = [
+    '继续。先写三篇正文。',
+    '',
+    '<tool_call>{"name":"create_file","arguments":{"path":"a.md","content":"## 变更说明\\n\\n```sh\\nexport X=1\\n```\\n\\n正文"}}',
+  ].join('\n');
+  const out = parseToolCalls(body, TOOLS);
+  assert.equal(out.calls.length, 1, '正文：' + out.content.slice(0, 120));
+  assert.equal(out.calls[0].arguments.path, 'a.md');
+  assert.ok(out.calls[0].arguments.content.includes('export X=1'));
+});
+
+test('DSML 的 parameter 被 calls 标签收尾时也要解析', () => {
+  const body = [
+    '<｜｜DSML｜｜ invoke name="create_file">',
+    '<｜｜DSML｜｜ parameter name="arguments" string="false">{"path":"b.md","content":"x = 1"}</｜｜DSML｜｜ calls>',
+  ].join('\n');
+  const out = parseToolCalls(body, TOOLS);
+  assert.equal(out.calls.length, 1, '没解析出来：' + out.content.slice(0, 200));
+  assert.equal(out.calls[0].name, 'create_file');
+  assert.equal(out.calls[0].arguments.path, 'b.md');
+  assert.equal(out.calls[0].arguments.content, 'x = 1');
+});
+
+test('一轮里混写 <tool_call> 和两个 DSML invoke，三个调用都要出来', () => {
+  const body = [
+    '<tool_call>{"name":"create_file","arguments":{"path":"1.md","content":"一"}}',
+    '</｜｜DSML｜｜ calls>',
+    '<｜｜DSML｜｜ invoke name="create_file">',
+    '<｜｜DSML｜｜ parameter name="arguments" string="false">{"path":"2.md","content":"二"}</｜｜DSML｜｜ calls>',
+    '<｜｜DSML｜｜ invoke name="create_file">',
+    '<｜｜DSML｜｜ parameter name="arguments" string="false">{"path":"3.md","content":"三"}</｜｜DSML｜｜ parameter>',
+    '</｜｜DSML｜｜ invoke>',
+  ].join('\n');
+  const out = parseToolCalls(body, TOOLS);
+  const paths = out.calls.map(c => c.arguments.path).sort();
+  assert.deepEqual(paths, ['1.md', '2.md', '3.md'], '解析结果：' + JSON.stringify(out.calls));
+  assert.equal(out.content.trim(), '', '协议残渣不能留在正文里：' + out.content.slice(0, 200));
+});
+
 
 
 
