@@ -1,0 +1,6 @@
+# 统一用 LF：脚本要在 Linux / Android 的 shell 里跑，CRLF 会直接报 bad interpreter
+* text=auto eol=lf
+*.sh text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
