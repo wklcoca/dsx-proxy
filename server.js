@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const { DeepSeekClient, DeepSeekError } = require('./lib/deepseek');
 const { buildRequest, newId, completionResponse, usageFrom } = require('./lib/openai');
 const { parseToolCalls, makeCallId } = require('./lib/tools');
+const { RunawayGuard } = require('./lib/guard');
 
 const ROOT = __dirname;
 const CONFIG_PATH = process.env.DS_PROXY_CONFIG || path.join(ROOT, 'config.json');
@@ -326,6 +327,9 @@ async function handleChat(req, res, body) {
 
     let contentSeen = '';
     let thinkSeen = '';
+    // 复读守卫：模型陷进重复时立刻停，而不是等它把几万字吐完
+    const runawayGuard = new RunawayGuard();
+    let runaway = null;
     let cs = null;
     let final = null;
     for (let attempt = 1; final === null; attempt++) {
@@ -339,7 +343,7 @@ async function handleChat(req, res, body) {
       modelType: r.modelType,
       refFileIds,
       onDelta: d => {
-        if (aborted) return;
+        if (aborted || runaway) return;
         if (d.type === 'think') {
           thinkSeen += d.text;
           if (stream) {
@@ -348,6 +352,13 @@ async function handleChat(req, res, body) {
           }
         } else if (d.type === 'content') {
           contentSeen += d.text;
+          // 复读判定要在这里做：命中后立刻停止转发，并让 consumeSSE 取消读取上游
+          const hit = runawayGuard.check(contentSeen);
+          if (hit) {
+            runaway = hit;
+            logLine({ event: 'guard_runaway', period: hit.period, repeats: hit.repeats, chars: hit.chars, content: contentSeen.length });
+            return;
+          }
           // 有工具时先缓冲，避免把 <tool_call> 片段漏给客户端
           if (stream && !r.tools.length) {
             ensureStart();
@@ -355,6 +366,7 @@ async function handleChat(req, res, body) {
           }
         }
       },
+      shouldStop: () => runaway !== null,
         });
         cs = once.stream;
         final = await once.done;
@@ -394,6 +406,13 @@ async function handleChat(req, res, body) {
     const usage = usageFrom(final, r.fullPrompt.length, contentSeen.length + thinkSeen.length, r.fullPrompt);
     let content = final.content || contentSeen;
     let reasoning = final.thinking || thinkSeen;
+    // 复读被中断时，流里已经把重复段发出去了；落库/非流式响应只保留一份，
+    // 否则消息会存下几万字一模一样的文本。
+    if (runaway && runaway.unit) {
+      while (content.endsWith(runaway.unit + runaway.unit)) {
+        content = content.slice(0, content.length - runaway.unit.length);
+      }
+    }
     let toolCalls = [];
     const recoverStats = {};
     let emptyArgs = 0;
@@ -426,7 +445,13 @@ async function handleChat(req, res, body) {
       content = [content.trim(), note].filter(Boolean).join('\n\n');
       try { logLine({ event: 'echo_warning', stripped: strippedChars, kept: content.length - note.length }); } catch (_) {}
     }
-    const finishReason = toolCalls.length ? 'tool_calls' : 'stop';
+    // 复读被提前中断：必须让调用方看出这是被截断的，不能伪装成正常结束
+    let runawayNote = '';
+    if (runaway) {
+      runawayNote = `> ⚠️ dsx-proxy：模型陷入重复输出（尾部同一段文本连续重复 ${runaway.repeats} 次 × ${runaway.period} 字符），已在 ${contentSeen.length} 字符处中断本次生成。请重新发送，或让它换个方向继续。`;
+      content = [content.trim(), runawayNote].filter(Boolean).join('\n\n');
+    }
+    const finishReason = runaway ? 'length' : (toolCalls.length ? 'tool_calls' : 'stop');
     // 模型用了非标准格式（方言 / 缩写的工具名 / 残缺标签）→ 下一轮明确告诉它，
     // 否则它会一直沿用错误格式（我们照单全收，在它眼里就是"格式没错"）。
     const recoverKinds = ['salvaged', 'dialect', 'renamed', 'residue'].filter(k => recoverStats[k]);
@@ -465,6 +490,7 @@ async function handleChat(req, res, body) {
         : { n: hashes.length, trunc: r.truncated ? 1 : 0 }),
       ...(recoverKinds.length ? { recover: recoverKinds.join('+') } : {}),
       ...(emptyArgs ? { emptyArgs } : {}),
+      ...(runaway ? { guard: 'runaway', guardPeriod: runaway.period, guardRepeats: runaway.repeats } : {}),
     };
     // 诊断：上游明明产出了内容，最终正文和工具调用却都是空 —— 说明解析/清洗层把它吃掉了。
     // 不打原始文本就只能看到 content=0，无从下手（真实事故：59 个输出 token 消失）。
@@ -497,6 +523,9 @@ async function handleChat(req, res, body) {
           }],
         }, null, { id, model: r.model, created }));
       }
+    } else if (runawayNote) {
+      // 纯正文是逐段流出去的，提示要单独补一段，否则客户端看不到"被截断"的原因
+      sseData(res, chunk({ content: `\n\n${runawayNote}` }, null, { id, model: r.model, created }));
     }
     sseData(res, chunk({}, finishReason, { id, model: r.model, created, usage }));
     res.write('data: [DONE]\n\n');
