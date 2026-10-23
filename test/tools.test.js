@@ -452,6 +452,36 @@ test('一轮里混写 <tool_call> 和两个 DSML invoke，三个调用都要出�
   assert.equal(out.content.trim(), '', '协议残渣不能留在正文里：' + out.content.slice(0, 200));
 });
 
+// 真实事故：起始标签没闭合，标签后面还粘着参数碎片。只删标签会把碎片当正文发出去，
+// 反代日志表现为 content=10 raw=173 stripped=163 tools=0 recover=residue，
+// 正文里出现 `true">4000`；模型随后照着复现，连续四次一模一样。
+test('没闭合的 <tool_call> 后面的参数碎片不能当正文发出去', () => {
+  const out = parseToolCalls('<tool_call name="create_file">true">4000', TOOLS);
+  assert.equal(out.calls.length, 0);
+  assert.equal(out.content, '', '正文泄漏了参数碎片：' + JSON.stringify(out.content));
+});
+
+test('没闭合标签之前的正常正文要保留，只丢后面的碎片', () => {
+  const out = parseToolCalls('终端返回空。\n<tool_call name="create_file">true">4000', TOOLS);
+  assert.ok(out.content.includes('终端返回空'), '正常正文被误删：' + JSON.stringify(out.content));
+  assert.ok(!out.content.includes('4000'), '碎片仍在正文：' + JSON.stringify(out.content));
+});
+
+test('没闭合的 DSML invoke 后面的碎片同样不能留在正文', () => {
+  const body = '<｜｜DSML｜｜ invoke name="create_file">true">4000';
+  const out = parseToolCalls(body, TOOLS);
+  assert.equal(out.calls.length, 1, '调用本身仍要被抢救出来');
+  assert.equal(out.content, '', '正文泄漏了碎片：' + JSON.stringify(out.content));
+});
+
+test('普通正文里的尖括号和数字不受影响', () => {
+  const out = '成本小于 4000 < 5000 就可以';
+  const r = parseToolCalls(out, TOOLS);
+  assert.equal(r.calls.length, 0);
+  assert.equal(r.content, out);
+});
+
+
 
 
 
