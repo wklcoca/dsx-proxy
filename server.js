@@ -12,7 +12,7 @@ const crypto = require('crypto');
 
 const { DeepSeekClient, DeepSeekError } = require('./lib/deepseek');
 const { buildRequest, newId, completionResponse, usageFrom } = require('./lib/openai');
-const { parseToolCalls, makeCallId } = require('./lib/tools');
+const { parseToolCalls, makeCallId, withDropWarning } = require('./lib/tools');
 const { RunawayGuard } = require('./lib/guard');
 
 const ROOT = __dirname;
@@ -416,8 +416,11 @@ async function handleChat(req, res, body) {
     let toolCalls = [];
     const recoverStats = {};
     let emptyArgs = 0;
+    // 解析前的原文，用于判断“整轮是不是全被当残留删掉了”
+    let rawToolInput = '';
     if (r.tools.length && r.toolChoice !== 'none') {
       const rawContent = content;
+      rawToolInput = rawContent;
       const parsed = parseToolCalls(content, r.tools, { stats: recoverStats });
       if (config.stripProtocolResidue !== false) content = parsed.content;
       else content = rawContent;
@@ -433,6 +436,19 @@ async function handleChat(req, res, body) {
           fs.writeFileSync(path.join(dir, `${id}.txt`), String(rawContent || ''), 'utf8');
         } catch (_) {}
       }
+    }
+    // 整轮输出都是残缺的工具调用时，正文会被当残留清空、调用也解析不出来，
+    // 客户端只会收到一条空消息 —— 用户看到“输出为空”，对话还少了一轮。
+    // 真实事故：模型把 JSON 写残缺（少一个 '}' 或半截字符串），日志 content=0 tools=0 raw=516。
+    // 不能默默交白卷：必须让调用方看出这一轮到底发生了什么。
+    const dropResult = withDropWarning(content, {
+      toolCalls,
+      rawToolInput,
+      enabled: config.dropWarning !== false,
+    });
+    if (dropResult.dropped) {
+      content = dropResult.content;
+      try { logLine({ event: 'dropped_all', id, dropped: dropResult.dropped }); } catch (_) {}
     }
     // 只有「复述类垃圾」被删掉时才算模型犯错。
     // 千万不能拿「原文长度 - 清洗后长度」：合法的工具调用也会从正文里消失，

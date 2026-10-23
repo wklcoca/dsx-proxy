@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { parseToolCalls, buildToolPrompt, normalizeFenceLines } = require('../lib/tools');
+const { parseToolCalls, buildToolPrompt, normalizeFenceLines, dropAllReplyNote, withDropWarning } = require('../lib/tools');
 
 const TOOLS = [
   {
@@ -480,6 +480,57 @@ test('普通正文里的尖括号和数字不受影响', () => {
   assert.equal(r.calls.length, 0);
   assert.equal(r.content, out);
 });
+
+// 真实事故（反代日志 content=0 tools=0 raw=516 recover=residue）：模型把工具调用写残缺，
+// 整段被当残留删掉，客户端收到一条空消息 —— 用户只看到“输出为空”。
+// 这一组用例锁定“确实会被删光”这个前提，server.js 据此补一条可见提示而不是交白卷。
+test('残缺的工具调用会被整段清空（这是需要补提示的触发条件）', () => {
+  const shapes = [
+    '<tool_call>{"name":"package_proxy","arguments":{"tool_name":"bash","params":{"command":"ls',
+    '<tool_call>{"name":"edit_file">\n<argument name="path">/a</argument>',
+    '<tool_call>{"name":"package_proxy","arguments":{"tool_name":"bash"}</tool_call>',
+  ];
+  for (const raw of shapes) {
+    const r = parseToolCalls(raw, TOOLS);
+    assert.equal(r.calls.length, 0, `不该解析出调用: ${raw}`);
+    assert.equal(r.content.trim(), '', `正文应被清空: ${JSON.stringify(r.content)}`);
+  }
+});
+
+test('整轮被删光时的提示要说清丢了多少字符，不能空着', () => {
+  const note = dropAllReplyNote(516);
+  assert.match(note, /516/, '提示里要带上丢弃的字符数');
+  assert.match(note, /不完整/, '要说明调用不完整');
+  assert.match(note, /没有执行任何工具/, '要说明没有执行工具');
+  assert.ok(note.trim().length > 20);
+  assert.doesNotMatch(dropAllReplyNote(12), /NaN|undefined/);
+});
+
+// server.js 只在这一种情况下补提示；判定错了会造成“正常回复被塞警告”或“空回复照旧”。
+test('只有整轮被删光时才补提示', () => {
+  const raw = '<tool_call>{"name":"bash","arguments":{"command":"ls';
+  const dropped = withDropWarning('', { toolCalls: [], rawToolInput: raw });
+  assert.equal(dropped.dropped, raw.length);
+  assert.match(dropped.content, /不完整/);
+
+  // 有正文 → 不动
+  const kept = withDropWarning('正常回答', { toolCalls: [], rawToolInput: raw });
+  assert.deepEqual(kept, { content: '正常回答', dropped: 0 });
+
+  // 解析出了调用 → 不动（这轮是成功的工具调用，正文为空很正常）
+  const called = withDropWarning('', { toolCalls: [{ name: 'bash' }], rawToolInput: raw });
+  assert.deepEqual(called, { content: '', dropped: 0 });
+
+  // 原文本来就是空 → 不动（模型只输出了思考）
+  assert.deepEqual(withDropWarning('', { toolCalls: [], rawToolInput: '' }), { content: '', dropped: 0 });
+
+  // 开关关掉 → 不动
+  assert.deepEqual(
+    withDropWarning('', { toolCalls: [], rawToolInput: raw, enabled: false }),
+    { content: '', dropped: 0 },
+  );
+});
+
 
 
 
