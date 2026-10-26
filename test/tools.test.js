@@ -531,6 +531,44 @@ test('只有整轮被删光时才补提示', () => {
   );
 });
 
+// 下面三条形状都来自真机落盘的原始输出（2026-10-23 ~ 10-25 的 1645 个样本）。
+// 修之前扫描器判 11 个泄漏，修之后 0 个（另 2 个是扫描器把 Java 代码块里单独的 '}' 误判成泄漏）。
+
+test('调用成功、但闭合标签写成 </||DSML|| call_call> 时，正文尾巴不能留下 }', () => {
+  const raw = '这一局只有 46 帧，我直接分析。\n\n'
+    + '<tool_call>\n{"name":"create_file","arguments":{"new":"x = 1","path":"/sdcard/a.py"}}\n'
+    + '</｜｜DSML｜｜ call_call>';
+  const out = parseToolCalls(raw, TOOLS);
+  assert.equal(out.calls.length, 1, '调用要救出来：' + JSON.stringify(out.content));
+  assert.equal(out.calls[0].name, 'create_file');
+  assert.equal(out.content.trim(), '这一局只有 46 帧，我直接分析。', '正文尾巴不能留 }：' + JSON.stringify(out.content));
+});
+
+test('省略 invoke 的 DSML 块：工具名要从参数里取回，不能叫 "arguments"', () => {
+  // 这条要认 package_proxy，共享 fixture 里没有它，这里单独给一份（参数不设 schema，原样透传）。
+  const PROXY_TOOLS = TOOLS.concat([{ type: 'function', function: { name: 'package_proxy', parameters: [] } }]);
+  const raw = '先确认容器可行性。\n\n'
+    + '<｜｜DSML｜｜ calls>\n'
+    + '<｜｜DSML｜｜ parameter name="arguments" string="true">{"command": "su -c \'id\'", "timeoutMs": 40000, "tool_name": "super_admin:shell"}</｜｜DSML｜｜ parameter>\n'
+    + '<｜｜DSML｜｜ parameter name="tool_name" string="true">package_proxy｜｜DSML｜｜ parameter>\n'
+    + '</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>';
+  const out = parseToolCalls(raw, PROXY_TOOLS);
+  assert.equal(out.calls.length, 1, '应该还原成一个调用：' + JSON.stringify(out.content));
+  assert.equal(out.calls[0].name, 'package_proxy', '不能把参数名 arguments 当工具名');
+  assert.equal(out.calls[0].arguments.tool_name, 'super_admin:shell', '内层工具名要保留');
+  assert.equal(out.calls[0].arguments.params.timeoutMs, 40000, '其余参数要收进 params');
+  assert.ok(!/\|\|DSML\|\|/.test(out.content), '正文不能漏出 DSML 残片：' + JSON.stringify(out.content));
+  assert.ok(out.content.includes('先确认容器可行性'));
+});
+
+test('缺了 < 的 DSML 残片也不能留在正文', () => {
+  const raw = '写模块。package_proxy||DSML|| parameter>';
+  const out = parseToolCalls(raw, TOOLS);
+  assert.ok(!/\|\|DSML\|\|/.test(out.content), '残片仍在正文：' + JSON.stringify(out.content));
+  assert.ok(out.content.includes('写模块'));
+});
+
+
 
 
 
