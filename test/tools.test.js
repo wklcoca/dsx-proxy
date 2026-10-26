@@ -568,6 +568,40 @@ test('缺了 < 的 DSML 残片也不能留在正文', () => {
   assert.ok(out.content.includes('写模块'));
 });
 
+// 真机库里有两条 100KB+ 的回复是这样烂掉的：工具名带着残片发出去 → 客户端回
+// "Tool not found: super_admin:shell||DSML|| parameter" → 这段错误文字进历史被模型复述。
+// 所以带标记的工具名必须在发出前就截干净。
+test('工具名里粘着标记残片时必须截断，不能原样发出去', () => {
+  const WIDE = TOOLS.concat([
+    { type: 'function', function: { name: 'super_admin:shell', parameters: [] } },
+  ]);
+  const cases = [
+    ['super_admin:shell||DSML|| parameter>', 'super_admin:shell'],
+    ['super_admin:bash</||DSML||', 'super_admin:bash'],
+    ['create_file"', 'create_file'],
+  ];
+  for (const [broken, expected] of cases) {
+    const raw = '<tool_call>' + JSON.stringify({ name: broken, arguments: { command: 'id' } }) + '</tool_call>';
+    const out = parseToolCalls(raw, WIDE);
+    assert.equal(out.calls.length, 1, `应该解析出一个调用: ${broken}`);
+    assert.equal(out.calls[0].name, expected, `工具名没截干净: ${out.calls[0].name}`);
+  }
+});
+
+test('正常工具名一个字符都不改', () => {
+  const WIDE = TOOLS.concat([
+    { type: 'function', function: { name: 'v1_runtime:terminal', parameters: [] } },
+    { type: 'function', function: { name: 'a.b-c_d:e', parameters: [] } },
+  ]);
+  for (const name of ['super_admin:bash', 'create_file', 'v1_runtime:terminal', 'a.b-c_d:e']) {
+    const raw = '<tool_call>' + JSON.stringify({ name, arguments: { command: 'id' } }) + '</tool_call>';
+    const out = parseToolCalls(raw, WIDE);
+    assert.equal(out.calls.length, 1, `应该解析出来: ${name}`);
+    assert.equal(out.calls[0].name, name);
+  }
+});
+
+
 
 
 
